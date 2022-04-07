@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdbool.h>
 #include "params.h"
 #include "sign.h"
 #include "packing.h"
@@ -82,12 +83,10 @@ int crypto_sign_signature(uint8_t *sig,
                           size_t mlen,
                           const uint8_t *sk)
 {
-  unsigned int n;
   uint8_t seedbuf[3*SEEDBYTES + 2*CRHBYTES];
   uint8_t *rho, *tr, *key, *mu, *rhoprime;
   uint16_t nonce = 0;
-  polyvecl mat[K], s1, y, z;
-  polyveck t0, s2, w1, w0, h;
+  polyveck w;
   poly cp;
   shake256incctx state;
 
@@ -96,7 +95,10 @@ int crypto_sign_signature(uint8_t *sig,
   key = tr + SEEDBYTES;
   mu = key + SEEDBYTES;
   rhoprime = mu + CRHBYTES;
-  unpack_sk(rho, tr, key, &t0, &s1, &s2, sk);
+
+  unpack_sk_rho(rho, sk);
+  unpack_sk_tr(tr, sk);
+  unpack_sk_key(key, sk);
 
   /* Compute CRH(tr, msg) */
   shake256_inc_init(&state);
@@ -111,69 +113,129 @@ int crypto_sign_signature(uint8_t *sig,
   shake256(rhoprime, CRHBYTES, key, SEEDBYTES + CRHBYTES);
 #endif
 
-  /* Expand matrix and transform vectors */
-  polyvec_matrix_expand(mat, rho);
-  polyvecl_ntt(&s1);
-  polyveck_ntt(&s2);
-  polyveck_ntt(&t0);
+  for (;;) {
+    bool abort = false;
 
-rej:
-  /* Sample intermediate vector y */
-  polyvecl_uniform_gamma1(&y, rhoprime, nonce++);
+    /* Matrix-vector multiplication */
+    for (unsigned int i = 0; i < K; ++i) {
+      {
+        poly y_elem, mat_elem;
+        poly_uniform_gamma1(&y_elem, rhoprime, L * nonce + 0);
+        poly_ntt(&y_elem);
+        poly_uniform(&mat_elem, rho, (i << 8) | 0);
+        poly_pointwise_montgomery(&w.vec[i], &mat_elem, &y_elem);
+        for (unsigned int j = 1; j < L; ++j) {
+          poly_uniform_gamma1(&y_elem, rhoprime, L * nonce + j);
+          poly_ntt(&y_elem);
+          poly_uniform(&mat_elem, rho, (i << 8) | j);
+          poly_pointwise_acc_montgomery(&w.vec[i], &mat_elem, &y_elem);
+        }
+      }
 
-  /* Matrix-vector multiplication */
-  z = y;
-  polyvecl_ntt(&z);
-  polyvec_matrix_pointwise_montgomery(&w1, mat, &z);
-  polyveck_reduce(&w1);
-  polyveck_invntt_tomont(&w1);
+      poly_reduce(&w.vec[i]);
+      poly_invntt_tomont(&w.vec[i]);
 
-  /* Decompose w and call the random oracle */
-  polyveck_caddq(&w1);
-  polyveck_decompose(&w1, &w0, &w1);
-  polyveck_pack_w1(sig, &w1);
+      {
+        /* Decompose w and call the random oracle */
+        poly w0_elem, w1_elem;
+        poly_caddq(&w.vec[i]);
+        poly_decompose(&w1_elem, &w0_elem, &w.vec[i]);
+        polyw1_pack(&sig[i*POLYW1_PACKEDBYTES], &w1_elem);
+      }
+    }
 
-  shake256_inc_init(&state);
-  shake256_inc_absorb(&state, mu, CRHBYTES);
-  shake256_inc_absorb(&state, sig, K*POLYW1_PACKEDBYTES);
-  shake256_inc_finalize(&state);
-  shake256_inc_squeeze(sig, SEEDBYTES, &state);
-  poly_challenge(&cp, sig);
-  poly_ntt(&cp);
+    shake256_inc_init(&state);
+    shake256_inc_absorb(&state, mu, CRHBYTES);
+    shake256_inc_absorb(&state, sig, K*POLYW1_PACKEDBYTES);
+    shake256_inc_finalize(&state);
+    /* Immediately write ctilde to signature */
+    shake256_inc_squeeze(sig, SEEDBYTES, &state);
+    poly_challenge(&cp, sig);
+    poly_ntt(&cp);
 
-  /* Compute z, reject if it reveals secret */
-  polyvecl_pointwise_poly_montgomery(&z, &cp, &s1);
-  polyvecl_invntt_tomont(&z);
-  polyvecl_add(&z, &z, &y);
-  polyvecl_reduce(&z);
-  if(polyvecl_chknorm(&z, GAMMA1 - BETA))
-    goto rej;
+    /* Compute z, reject if it reveals secret */
+    for (unsigned int i = 0; i < L; i++)
+    {
+      poly z_elem;
+      {
+        poly s1_elem;
+        unpack_sk_s1(&s1_elem, i, sk);
+        poly_ntt(&s1_elem);
+        poly_pointwise_montgomery(&z_elem, &cp, &s1_elem);
+        poly_invntt_tomont(&z_elem);
+      }
+      {
+        poly y_elem;
+        poly_uniform_gamma1(&y_elem, rhoprime, L * nonce + i);
+        poly_add(&z_elem, &z_elem, &y_elem);
+      }
+      poly_reduce(&z_elem);
+      if (poly_chknorm(&z_elem, GAMMA1 - BETA)) {
+        abort = true;
+        break;
+      }
 
-  /* Check that subtracting cs2 does not change high bits of w and low bits
-   * do not reveal secret information */
-  polyveck_pointwise_poly_montgomery(&h, &cp, &s2);
-  polyveck_invntt_tomont(&h);
-  polyveck_sub(&w0, &w0, &h);
-  polyveck_reduce(&w0);
-  if(polyveck_chknorm(&w0, GAMMA2 - BETA))
-    goto rej;
+      /* Write z to signature */
+      pack_sig_z(sig, &z_elem, i);
+    }
+    nonce++;
+    if (abort) {
+      continue;
+    }
 
-  /* Compute hints for w1 */
-  polyveck_pointwise_poly_montgomery_leaktime(&h, &cp, &t0);
-  polyveck_invntt_tomont_leaktime(&h);
-  polyveck_reduce(&h);
-  if(polyveck_chknorm(&h, GAMMA2))
-    goto rej;
+    /* Prepare writing of hints to signature */
+    struct pack_sig_h pack_sig_h;
+    pack_sig_h_init(&pack_sig_h, sig);
 
-  polyveck_add(&w0, &w0, &h);
-  n = polyveck_make_hint(&h, &w0, &w1);
-  if(n > OMEGA)
-    goto rej;
+    unsigned int hint_popcount = 0;
+    for (unsigned int i = 0; i < K; i++) {
+      poly w0_elem, w1_elem, h_elem;
+      poly_decompose(&w1_elem, &w0_elem, &w.vec[i]);
 
-  /* Write signature */
-  pack_sig(sig, sig, &z, &h);
-  *siglen = CRYPTO_BYTES;
-  return 0;
+      /* Check that subtracting cs2 does not change high bits of w and low bits
+      do not reveal secret information */
+      {
+        poly s2_elem;
+        unpack_sk_s2(&s2_elem, i, sk);
+        poly_ntt(&s2_elem);
+        poly_pointwise_montgomery(&h_elem, &cp, &s2_elem);
+      }
+      poly_invntt_tomont(&h_elem);
+      poly_sub(&w0_elem, &w0_elem, &h_elem);
+      poly_reduce(&w0_elem);
+      if (poly_chknorm(&w0_elem, GAMMA2 - BETA)) {
+        abort = true;
+        break;
+      }
+
+      /* Compute hints for w1 */
+      poly t0_elem;
+      unpack_sk_t0(&t0_elem, i, sk);
+      poly_ntt(&t0_elem);
+      poly_pointwise_montgomery_leaktime(&h_elem, &cp, &t0_elem);
+      poly_invntt_tomont_leaktime(&h_elem);
+      poly_reduce(&h_elem);
+      if (poly_chknorm(&h_elem, GAMMA2)) {
+        abort = true;
+        break;
+      }
+      poly_add(&w0_elem, &w0_elem, &h_elem);
+      hint_popcount += poly_make_hint(&h_elem, &w0_elem, &w1_elem);
+      if (hint_popcount > OMEGA) {
+        abort = true;
+        break;
+      }
+
+      /* Encode h */
+      pack_sig_h_update(&pack_sig_h, &h_elem);
+    }
+    if (abort) {
+      continue;
+    }
+
+    *siglen = CRYPTO_BYTES;
+    return 0;
+  }
 }
 
 /*************************************************

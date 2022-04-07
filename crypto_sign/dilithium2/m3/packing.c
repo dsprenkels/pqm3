@@ -96,6 +96,48 @@ void pack_sk(uint8_t sk[CRYPTO_SECRETKEYBYTES],
     polyt0_pack(sk + i*POLYT0_PACKEDBYTES, &t0->vec[i]);
 }
 
+void unpack_sk_rho(uint8_t rho[SEEDBYTES], const uint8_t sk[CRYPTO_SECRETKEYBYTES])
+{
+  const uint8_t* sk_rho = &sk[0];
+  for (unsigned i = 0; i < SEEDBYTES; i++) {
+    rho[i] = sk_rho[i];
+  }
+}
+
+void unpack_sk_key(uint8_t key[SEEDBYTES], const uint8_t sk[CRYPTO_SECRETKEYBYTES])
+{
+  const uint8_t* sk_key = &sk[SEEDBYTES];
+  for (unsigned i = 0; i < SEEDBYTES; i++) {
+    key[i] = sk_key[i];
+  }
+}
+
+void unpack_sk_tr(uint8_t tr[SEEDBYTES], const uint8_t sk[CRYPTO_SECRETKEYBYTES])
+{
+  const uint8_t* sk_tr = &sk[2 * SEEDBYTES];
+  for (unsigned i = 0; i < SEEDBYTES; i++) {
+    tr[i] = sk_tr[i];
+  }
+}
+
+void unpack_sk_s1(poly* s1_elem, unsigned int idx, const uint8_t sk[CRYPTO_SECRETKEYBYTES])
+{
+  const uint8_t* sk_s1 = &sk[3 * SEEDBYTES];
+  polyeta_unpack(s1_elem, &sk_s1[idx * POLYETA_PACKEDBYTES]);
+}
+
+void unpack_sk_s2(poly* s2_elem, unsigned int idx, const uint8_t sk[CRYPTO_SECRETKEYBYTES])
+{
+  const uint8_t* sk_s2 = &sk[3 * SEEDBYTES + L * POLYETA_PACKEDBYTES];
+  polyeta_unpack(s2_elem, &sk_s2[idx * POLYETA_PACKEDBYTES]);
+}
+
+void unpack_sk_t0(poly* t0_elem, unsigned int idx, const uint8_t sk[CRYPTO_SECRETKEYBYTES])
+{
+  const uint8_t* sk_t0 = &sk[3 * SEEDBYTES + (L + K) * POLYETA_PACKEDBYTES];
+  polyt0_unpack(t0_elem, &sk_t0[idx * POLYT0_PACKEDBYTES]);
+}
+
 /*************************************************
 * Name:        unpack_sk
 *
@@ -117,30 +159,59 @@ void unpack_sk(uint8_t rho[SEEDBYTES],
                polyveck *s2,
                const uint8_t sk[CRYPTO_SECRETKEYBYTES])
 {
-  unsigned int i;
+  unpack_sk_rho(rho, sk);
+  unpack_sk_key(key, sk);
+  unpack_sk_tr(tr, sk);
+  for (unsigned int i = 0; i < L; i++)
+  {
+    unpack_sk_s1(&s1->vec[i], i, sk);
+  }
+  for(unsigned int i = 0; i < K; i++) {
+    unpack_sk_s2(&s2->vec[i], i, sk);
+  }
+  for(unsigned int i = 0; i < K; i++) {
+    unpack_sk_t0(&t0->vec[i], i, sk);
+  }
+}
 
-  for(i = 0; i < SEEDBYTES; ++i)
-    rho[i] = sk[i];
-  sk += SEEDBYTES;
+void pack_sig_c(uint8_t sig[CRYPTO_BYTES],
+                       const uint8_t c[SEEDBYTES])
+{
+  uint8_t *c_sig = &sig[0];
+  for (unsigned int i = 0; i < SEEDBYTES; i++)
+  {
+    c_sig[i] = c[i];
+  }
+}                       
 
-  for(i = 0; i < SEEDBYTES; ++i)
-    key[i] = sk[i];
-  sk += SEEDBYTES;
+void pack_sig_z(uint8_t sig[CRYPTO_BYTES],
+                       const poly *z_elem,
+                       unsigned int idx)
+{
+  uint8_t *z_sig = &sig[SEEDBYTES];
+  polyz_pack(&z_sig[idx * POLYZ_PACKEDBYTES], z_elem);
+}
 
-  for(i = 0; i < SEEDBYTES; ++i)
-    tr[i] = sk[i];
-  sk += SEEDBYTES;
+void pack_sig_h_init(struct pack_sig_h *w, uint8_t *sig)
+{
+  w->hbuf = &sig[SEEDBYTES + L * POLYZ_PACKEDBYTES];
+  w->k = 0;
+  w->polys_written = 0;
 
-  for(i=0; i < L; ++i)
-    polyeta_unpack(&s1->vec[i], sk + i*POLYETA_PACKEDBYTES);
-  sk += L*POLYETA_PACKEDBYTES;
+  for (unsigned int i = 0; i < OMEGA + K; i++) {
+    w->hbuf[i] = 0;
+  }
+}
 
-  for(i=0; i < K; ++i)
-    polyeta_unpack(&s2->vec[i], sk + i*POLYETA_PACKEDBYTES);
-  sk += K*POLYETA_PACKEDBYTES;
-
-  for(i=0; i < K; ++i)
-    polyt0_unpack(&t0->vec[i], sk + i*POLYT0_PACKEDBYTES);
+void pack_sig_h_update(struct pack_sig_h *w, const poly *h)
+{
+  for (unsigned int i = 0; i < N; i++) {
+    if (h->coeffs[i] != 0) {
+      w->hbuf[w->k++] = i;
+    }
+  }
+  w->hbuf[OMEGA + w->polys_written] = w->k;
+  w->polys_written++;
 }
 
 /*************************************************
@@ -158,27 +229,16 @@ void pack_sig(uint8_t sig[CRYPTO_BYTES],
               const polyvecl *z,
               const polyveck *h)
 {
-  unsigned int i, j, k;
-
-  for(i=0; i < SEEDBYTES; ++i)
-    sig[i] = c[i];
-  sig += SEEDBYTES;
-
-  for(i = 0; i < L; ++i)
-    polyz_pack(sig + i*POLYZ_PACKEDBYTES, &z->vec[i]);
-  sig += L*POLYZ_PACKEDBYTES;
+  pack_sig_c(sig, c);
+  for (unsigned int i = 0; i < L; i++) {
+    pack_sig_z(sig, &z->vec[i], i);
+  }
 
   /* Encode h */
-  for(i = 0; i < OMEGA + K; ++i)
-    sig[i] = 0;
-
-  k = 0;
-  for(i = 0; i < K; ++i) {
-    for(j = 0; j < N; ++j)
-      if(h->vec[i].coeffs[j] != 0)
-        sig[k++] = j;
-
-    sig[OMEGA + i] = k;
+  struct pack_sig_h pack_sig_h;
+  pack_sig_h_init(&pack_sig_h, sig);
+  for(unsigned int i = 0; i < K; i++) {
+    pack_sig_h_update(&pack_sig_h, &h->vec[i]);
   }
 }
 
