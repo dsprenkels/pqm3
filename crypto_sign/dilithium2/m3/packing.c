@@ -3,6 +3,20 @@
 #include "polyvec.h"
 #include "poly.h"
 
+void pack_pk_rho(uint8_t pk[CRYPTO_PUBLICKEYBYTES], const uint8_t rho[SEEDBYTES])
+{
+  uint8_t* pk_rho = &pk[0];
+  for (unsigned int i = 0; i < SEEDBYTES; i++) {
+    pk_rho[i] = rho[i];
+  }
+}
+
+void pack_pk_t1(uint8_t pk[CRYPTO_PUBLICKEYBYTES], const poly* t1_elem, unsigned int idx)
+{
+  uint8_t* pk_t1 = &pk[SEEDBYTES];
+  polyt1_pack(&pk_t1[idx * POLYT1_PACKEDBYTES], t1_elem);
+}
+
 /*************************************************
 * Name:        pack_pk
 *
@@ -16,14 +30,10 @@ void pack_pk(uint8_t pk[CRYPTO_PUBLICKEYBYTES],
              const uint8_t rho[SEEDBYTES],
              const polyveck *t1)
 {
-  unsigned int i;
-
-  for(i = 0; i < SEEDBYTES; ++i)
-    pk[i] = rho[i];
-  pk += SEEDBYTES;
-
-  for(i = 0; i < K; ++i)
-    polyt1_pack(pk + i*POLYT1_PACKEDBYTES, &t1->vec[i]);
+  pack_pk_rho(pk, rho);
+  for(unsigned int i = 0; i < K; ++i) {
+    pack_pk_t1(pk, &t1->vec[i], i);
+  }
 }
 
 /*************************************************
@@ -49,6 +59,48 @@ void unpack_pk(uint8_t rho[SEEDBYTES],
     polyt1_unpack(&t1->vec[i], pk + i*POLYT1_PACKEDBYTES);
 }
 
+void pack_sk_rho(uint8_t sk[CRYPTO_SECRETKEYBYTES], const uint8_t rho[SEEDBYTES])
+{
+  uint8_t *sk_rho = &sk[0];
+  for (unsigned int i = 0; i < SEEDBYTES; i++) {
+    sk_rho[i] = rho[i];
+  }
+}
+
+void pack_sk_key(uint8_t sk[CRYPTO_SECRETKEYBYTES], const uint8_t key[SEEDBYTES])
+{
+  uint8_t *sk_key = &sk[SEEDBYTES];
+  for (unsigned int i = 0; i < SEEDBYTES; i++) {
+    sk_key[i] = key[i];
+  }
+}
+
+void pack_sk_tr(uint8_t sk[CRYPTO_SECRETKEYBYTES], const uint8_t tr[SEEDBYTES])
+{
+  uint8_t *sk_tr = &sk[2 * SEEDBYTES];
+  for (unsigned int i = 0; i < SEEDBYTES; i++) {
+    sk_tr[i] = tr[i];
+  }
+}
+
+void pack_sk_s1(uint8_t sk[CRYPTO_SECRETKEYBYTES], const poly *s1_elem, unsigned int idx)
+{
+  uint8_t *sk_s1 = &sk[3 * SEEDBYTES];
+  polyeta_pack(&sk_s1[idx * POLYETA_PACKEDBYTES], s1_elem);
+}
+
+void pack_sk_s2(uint8_t sk[CRYPTO_SECRETKEYBYTES], const poly *s2_elem, unsigned int idx)
+{
+  uint8_t *sk_s2 = &sk[3 * SEEDBYTES + L * POLYETA_PACKEDBYTES];
+  polyeta_pack(&sk_s2[idx * POLYETA_PACKEDBYTES], s2_elem);
+}
+
+void pack_sk_t0(uint8_t sk[CRYPTO_SECRETKEYBYTES], const poly *t0_elem, unsigned int idx)
+{
+  uint8_t *sk_t0 = &sk[3 * SEEDBYTES + (L + K) * POLYETA_PACKEDBYTES];
+  polyt0_pack(&sk_t0[idx * POLYT0_PACKEDBYTES], t0_elem);
+}
+
 /*************************************************
 * Name:        pack_sk
 *
@@ -70,30 +122,18 @@ void pack_sk(uint8_t sk[CRYPTO_SECRETKEYBYTES],
              const polyvecl *s1,
              const polyveck *s2)
 {
-  unsigned int i;
-
-  for(i = 0; i < SEEDBYTES; ++i)
-    sk[i] = rho[i];
-  sk += SEEDBYTES;
-
-  for(i = 0; i < SEEDBYTES; ++i)
-    sk[i] = key[i];
-  sk += SEEDBYTES;
-
-  for(i = 0; i < SEEDBYTES; ++i)
-    sk[i] = tr[i];
-  sk += SEEDBYTES;
-
-  for(i = 0; i < L; ++i)
-    polyeta_pack(sk + i*POLYETA_PACKEDBYTES, &s1->vec[i]);
-  sk += L*POLYETA_PACKEDBYTES;
-
-  for(i = 0; i < K; ++i)
-    polyeta_pack(sk + i*POLYETA_PACKEDBYTES, &s2->vec[i]);
-  sk += K*POLYETA_PACKEDBYTES;
-
-  for(i = 0; i < K; ++i)
-    polyt0_pack(sk + i*POLYT0_PACKEDBYTES, &t0->vec[i]);
+  pack_sk_rho(sk, rho);
+  pack_sk_key(sk, key);
+  pack_sk_tr(sk, tr);
+  for (unsigned int i = 0; i < L; i++) {
+    pack_sk_s1(sk, &s1->vec[i], i);
+  }
+  for (unsigned int i = 0; i < K; i++) {
+    pack_sk_s2(sk, &s2->vec[i], i);
+  }
+  for (unsigned int i = 0; i < K; i++) {
+    pack_sk_t0(sk, &t0->vec[i], i);
+  }
 }
 
 void unpack_sk_rho(uint8_t rho[SEEDBYTES], const uint8_t sk[CRYPTO_SECRETKEYBYTES])

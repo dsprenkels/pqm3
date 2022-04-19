@@ -5,8 +5,32 @@
 #include "params.h"
 #include "polyvec.h"
 
+#define pack_pk_rho DILITHIUM_NAMESPACE(pack_pk_rho)
+void pack_pk_rho(uint8_t pk[CRYPTO_PUBLICKEYBYTES], const uint8_t rho[SEEDBYTES]);
+
+#define pack_pk_t1 DILITHIUM_NAMESPACE(pack_pk_t1)
+void pack_pk_t1(uint8_t pk[CRYPTO_PUBLICKEYBYTES], const poly* t1_elem, unsigned int idx);
+
 #define pack_pk DILITHIUM_NAMESPACE(pack_pk)
 void pack_pk(uint8_t pk[CRYPTO_PUBLICKEYBYTES], const uint8_t rho[SEEDBYTES], const polyveck *t1);
+
+#define pack_sk_rho DILITHIUM_NAMESPACE(pack_sk_rho)
+void pack_sk_rho(uint8_t sk[CRYPTO_SECRETKEYBYTES], const uint8_t rho[SEEDBYTES]);
+
+#define pack_sk_key DILITHIUM_NAMESPACE(pack_sk_key)
+void pack_sk_key(uint8_t sk[CRYPTO_SECRETKEYBYTES], const uint8_t key[SEEDBYTES]);
+
+#define pack_sk_tr DILITHIUM_NAMESPACE(pack_sk_tr)
+void pack_sk_tr(uint8_t sk[CRYPTO_SECRETKEYBYTES], const uint8_t tr[SEEDBYTES]);
+
+#define pack_sk_s1 DILITHIUM_NAMESPACE(pack_sk_s1)
+void pack_sk_s1(uint8_t sk[CRYPTO_SECRETKEYBYTES], const poly *s1_elem, unsigned int idx);
+
+#define pack_sk_s2 DILITHIUM_NAMESPACE(pack_sk_s2)
+void pack_sk_s2(uint8_t sk[CRYPTO_SECRETKEYBYTES], const poly *s2_elem, unsigned int idx);
+
+#define pack_sk_t0 DILITHIUM_NAMESPACE(pack_sk_t0)
+void pack_sk_t0(uint8_t sk[CRYPTO_SECRETKEYBYTES], const poly *t0_elem, unsigned int idx);
 
 #define pack_sk DILITHIUM_NAMESPACE(pack_sk)
 void pack_sk(uint8_t sk[CRYPTO_SECRETKEYBYTES],

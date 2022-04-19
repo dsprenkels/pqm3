@@ -8,6 +8,69 @@
 #include "randombytes.h"
 #include "symmetric.h"
 
+int crypto_sign_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t seed[SEEDBYTES])
+{
+  uint8_t seedbuf[2*SEEDBYTES + CRHBYTES];
+  uint8_t tr[SEEDBYTES];
+  const uint8_t *rho, *rhoprime, *key;
+
+  /* Get randomness for rho, rhoprime and key */
+  shake256(seedbuf, 2*SEEDBYTES + CRHBYTES, seed, SEEDBYTES);
+  rho = seedbuf;
+  rhoprime = rho + SEEDBYTES;
+  key = rhoprime + CRHBYTES;
+
+  /* Write seeds to secret & public keys */
+  pack_sk_rho(sk, rho);
+  pack_pk_rho(pk, rho);
+  pack_sk_key(sk, key);
+
+  for (unsigned int i = 0; i < K; i++) {
+    poly t1_elem;
+
+    /* Matrix-vector multiplication */
+    for (unsigned int j = 0; j < N; j++) {
+      t1_elem.coeffs[j] = 0;
+    }
+    for (unsigned int j = 0; j < L; j++) {
+      poly s1_elem, mat_elem;
+      poly_uniform_eta(&s1_elem, rhoprime, j);
+      if (i == 0) {
+        // Write s1 to secret key buffer
+        pack_sk_s1(sk, &s1_elem, j);
+      }
+      poly_ntt(&s1_elem);
+      poly_uniform(&mat_elem, rho, (i << 8) | j);
+      poly_pointwise_acc_montgomery(&t1_elem, &mat_elem, &s1_elem);
+    }
+    poly_reduce(&t1_elem);
+    poly_invntt_tomont(&t1_elem);
+
+    {
+      /* Add error vector s2 */
+      poly s2_elem;
+      poly_uniform_eta(&s2_elem, rhoprime, L + i);
+      pack_sk_s2(sk, &s2_elem, i);
+      poly_add(&t1_elem, &t1_elem, &s2_elem);
+    }
+
+    {
+      /* Extract t1 and write to key buffers */
+      poly t0_elem;
+      poly_caddq(&t1_elem);
+      poly_power2round(&t1_elem, &t0_elem, &t1_elem);
+      pack_sk_t0(sk, &t0_elem, i);
+      pack_pk_t1(pk, &t1_elem, i);
+    }
+  }
+
+  /* Compute H(rho, t1) and write secret key */
+  shake256(tr, SEEDBYTES, pk, CRYPTO_PUBLICKEYBYTES);
+  pack_sk_tr(sk, tr);
+
+  return 0;
+}
+
 /*************************************************
 * Name:        crypto_sign_keypair
 *
@@ -21,47 +84,14 @@
 * Returns 0 (success)
 **************************************************/
 int crypto_sign_keypair(uint8_t *pk, uint8_t *sk) {
-  uint8_t seedbuf[2*SEEDBYTES + CRHBYTES];
-  uint8_t tr[SEEDBYTES];
-  const uint8_t *rho, *rhoprime, *key;
-  polyvecl mat[K];
-  polyvecl s1, s1hat;
-  polyveck s2, t1, t0;
+  uint8_t seed[SEEDBYTES];
 
-  /* Get randomness for rho, rhoprime and key */
-  randombytes(seedbuf, SEEDBYTES);
-  shake256(seedbuf, 2*SEEDBYTES + CRHBYTES, seedbuf, SEEDBYTES);
-  rho = seedbuf;
-  rhoprime = rho + SEEDBYTES;
-  key = rhoprime + CRHBYTES;
+  if (0 != randombytes(seed, SEEDBYTES)) {
+    /* Failed to get randomness from the platform */
+    return -1;
+  }
 
-  /* Expand matrix */
-  polyvec_matrix_expand(mat, rho);
-
-  /* Sample short vectors s1 and s2 */
-  polyvecl_uniform_eta(&s1, rhoprime, 0);
-  polyveck_uniform_eta(&s2, rhoprime, L);
-
-  /* Matrix-vector multiplication */
-  s1hat = s1;
-  polyvecl_ntt(&s1hat);
-  polyvec_matrix_pointwise_montgomery(&t1, mat, &s1hat);
-  polyveck_reduce(&t1);
-  polyveck_invntt_tomont(&t1);
-
-  /* Add error vector s2 */
-  polyveck_add(&t1, &t1, &s2);
-
-  /* Extract t1 and write public key */
-  polyveck_caddq(&t1);
-  polyveck_power2round(&t1, &t0, &t1);
-  pack_pk(pk, rho, &t1);
-
-  /* Compute H(rho, t1) and write secret key */
-  shake256(tr, SEEDBYTES, pk, CRYPTO_PUBLICKEYBYTES);
-  pack_sk(sk, rho, tr, key, &t0, &s1, &s2);
-
-  return 0;
+  return crypto_sign_keypair_from_seed(pk, sk, seed);
 }
 
 /*************************************************
