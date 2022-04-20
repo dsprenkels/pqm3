@@ -1,6 +1,5 @@
 #include "params.h"
 #include "packing.h"
-#include "polyvec.h"
 #include "poly.h"
 
 void pack_pk_rho(uint8_t pk[CRYPTO_PUBLICKEYBYTES], const uint8_t rho[SEEDBYTES])

@@ -3,7 +3,6 @@
 #include "params.h"
 #include "sign.h"
 #include "packing.h"
-#include "polyvec.h"
 #include "poly.h"
 #include "randombytes.h"
 #include "symmetric.h"
@@ -114,7 +113,7 @@ int crypto_sign_signature(uint8_t *sig,
   uint8_t seedbuf[3*SEEDBYTES + 2*CRHBYTES];
   uint8_t *rho, *tr, *key, *mu, *rhoprime;
   uint16_t nonce = 0;
-  polyveck w;
+  poly w[K];
   poly cp;
   shake256incctx state;
 
@@ -146,22 +145,22 @@ int crypto_sign_signature(uint8_t *sig,
 
     /* Matrix-vector multiplication */
     for (unsigned int i = 0; i < K; ++i) {
-      poly_zero(&w.vec[i]);
+      poly_zero(&w[i]);
       for (unsigned int j = 0; j < L; ++j) {
         poly y_elem, mat_elem;
         poly_uniform_gamma1(&y_elem, rhoprime, L * nonce + j);
         poly_ntt(&y_elem);
         poly_uniform(&mat_elem, rho, (i << 8) | j);
-        poly_pointwise_acc_montgomery(&w.vec[i], &mat_elem, &y_elem);
+        poly_pointwise_acc_montgomery(&w[i], &mat_elem, &y_elem);
       }
-      poly_reduce(&w.vec[i]);
-      poly_invntt_tomont(&w.vec[i]);
+      poly_reduce(&w[i]);
+      poly_invntt_tomont(&w[i]);
 
       {
         /* Decompose w and call the random oracle */
         poly w0_elem, w1_elem;
-        poly_caddq(&w.vec[i]);
-        poly_decompose(&w1_elem, &w0_elem, &w.vec[i]);
+        poly_caddq(&w[i]);
+        poly_decompose(&w1_elem, &w0_elem, &w[i]);
         polyw1_pack(&sig[i*POLYW1_PACKEDBYTES], &w1_elem);
       }
     }
@@ -212,7 +211,7 @@ int crypto_sign_signature(uint8_t *sig,
     unsigned int hint_popcount = 0;
     for (unsigned int i = 0; i < K; i++) {
       poly w0_elem, w1_elem, h_elem;
-      poly_decompose(&w1_elem, &w0_elem, &w.vec[i]);
+      poly_decompose(&w1_elem, &w0_elem, &w[i]);
 
       /* Check that subtracting cs2 does not change high bits of w and low bits
       do not reveal secret information */
