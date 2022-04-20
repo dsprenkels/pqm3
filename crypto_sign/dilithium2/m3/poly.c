@@ -18,6 +18,19 @@ extern uint64_t *tred, *tadd, *tmul, *tround, *tsample, *tpack;
 #endif
 
 /*************************************************
+* Name:        poly_zero
+*
+* Description: Set all coefficients in a polynomial to zero.
+*
+* Arguments:   - poly *a: pointer to input/output polynomial
+**************************************************/
+void poly_zero(poly *a) {
+  for (unsigned int i = 0; i < N; i++) {
+    a->coeffs[i] = 0;
+  }
+}
+
+/*************************************************
 * Name:        poly_reduce
 *
 * Description: Inplace reduction of all coefficients of polynomial to

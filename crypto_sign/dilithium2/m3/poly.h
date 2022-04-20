@@ -9,6 +9,8 @@ typedef struct {
   int32_t coeffs[N];
 } poly __attribute__((aligned(32)));
 
+#define poly_zero DILITHIUM_NAMESPACE(poly_zero)
+void poly_zero(poly *a);
 #define poly_reduce DILITHIUM_NAMESPACE(poly_reduce)
 void poly_reduce(poly *a);
 #define poly_caddq DILITHIUM_NAMESPACE(poly_caddq)

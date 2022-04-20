@@ -29,9 +29,7 @@ int crypto_sign_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t seed[S
     poly t1_elem;
 
     /* Matrix-vector multiplication */
-    for (unsigned int j = 0; j < N; j++) {
-      t1_elem.coeffs[j] = 0;
-    }
+    poly_zero(&t1_elem);
     for (unsigned int j = 0; j < L; j++) {
       poly s1_elem, mat_elem;
       poly_uniform_eta(&s1_elem, rhoprime, j);
@@ -148,20 +146,14 @@ int crypto_sign_signature(uint8_t *sig,
 
     /* Matrix-vector multiplication */
     for (unsigned int i = 0; i < K; ++i) {
-      {
+      poly_zero(&w.vec[i]);
+      for (unsigned int j = 0; j < L; ++j) {
         poly y_elem, mat_elem;
-        poly_uniform_gamma1(&y_elem, rhoprime, L * nonce + 0);
+        poly_uniform_gamma1(&y_elem, rhoprime, L * nonce + j);
         poly_ntt(&y_elem);
-        poly_uniform(&mat_elem, rho, (i << 8) | 0);
-        poly_pointwise_montgomery(&w.vec[i], &mat_elem, &y_elem);
-        for (unsigned int j = 1; j < L; ++j) {
-          poly_uniform_gamma1(&y_elem, rhoprime, L * nonce + j);
-          poly_ntt(&y_elem);
-          poly_uniform(&mat_elem, rho, (i << 8) | j);
-          poly_pointwise_acc_montgomery(&w.vec[i], &mat_elem, &y_elem);
-        }
+        poly_uniform(&mat_elem, rho, (i << 8) | j);
+        poly_pointwise_acc_montgomery(&w.vec[i], &mat_elem, &y_elem);
       }
-
       poly_reduce(&w.vec[i]);
       poly_invntt_tomont(&w.vec[i]);
 
@@ -318,64 +310,95 @@ int crypto_sign_verify(const uint8_t *sig,
                        size_t mlen,
                        const uint8_t *pk)
 {
-  unsigned int i;
-  uint8_t buf[K*POLYW1_PACKEDBYTES];
-  uint8_t rho[SEEDBYTES];
-  uint8_t mu[CRHBYTES];
-  uint8_t c[SEEDBYTES];
-  uint8_t c2[SEEDBYTES];
-  poly cp;
-  polyvecl mat[K], z;
-  polyveck t1, w1, h;
   shake256incctx state;
 
-  if(siglen != CRYPTO_BYTES)
+  if(siglen != CRYPTO_BYTES) {
     return -1;
+  }
 
-  unpack_pk(rho, &t1, pk);
-  if(unpack_sig(c, &z, &h, sig))
-    return -1;
-  if(polyvecl_chknorm(&z, GAMMA1 - BETA))
-    return -1;
+  struct unpack_sig_h unpack_sig_h;
+  unpack_sig_h_init(&unpack_sig_h, sig);
 
   /* Compute CRH(h(rho, t1), msg) */
-  shake256(mu, SEEDBYTES, pk, CRYPTO_PUBLICKEYBYTES);
-  shake256_inc_init(&state);
-  shake256_inc_absorb(&state, mu, SEEDBYTES);
-  shake256_inc_absorb(&state, m, mlen);
-  shake256_inc_finalize(&state);
-  shake256_inc_squeeze(mu, CRHBYTES, &state);
+  {
+    uint8_t mu[CRHBYTES];
+    shake256(mu, SEEDBYTES, pk, CRYPTO_PUBLICKEYBYTES);
+    shake256_inc_init(&state);
+    shake256_inc_absorb(&state, mu, SEEDBYTES);
+    shake256_inc_absorb(&state, m, mlen);
+    shake256_inc_finalize(&state);
+    shake256_inc_squeeze(mu, CRHBYTES, &state);
 
-  /* Matrix-vector multiplication; compute Az - c2^dt1 */
+    /* Call random oracle and verify challenge */
+    shake256_inc_init(&state);
+    shake256_inc_absorb(&state, mu, CRHBYTES);
+  }
+
+  /* Matrix-vector multiplication; compute Az - c2^dt1 and absorb into hash */
+  uint8_t c[SEEDBYTES];
+  poly cp;
+  unpack_sig_c(c, sig);
   poly_challenge(&cp, c);
-  polyvec_matrix_expand(mat, rho);
-
-  polyvecl_ntt_leaktime(&z);
-  polyvec_matrix_pointwise_montgomery_leaktime(&w1, mat, &z);
-
   poly_ntt_leaktime(&cp);
-  polyveck_shiftl(&t1);
-  polyveck_ntt_leaktime(&t1);
-  polyveck_pointwise_poly_montgomery(&t1, &cp, &t1);
 
-  polyveck_sub(&w1, &w1, &t1);
-  polyveck_reduce(&w1);
-  polyveck_invntt_tomont_leaktime(&w1);
+  for (unsigned int i = 0; i < K; i++) {
+    poly w1_elem;
 
-  /* Reconstruct w1 */
-  polyveck_caddq(&w1);
-  polyveck_use_hint(&w1, &w1, &h);
-  polyveck_pack_w1(buf, &w1);
+    poly_zero(&w1_elem);
+    for (unsigned int j = 0; j < L; j++) {
+      uint8_t rho[SEEDBYTES];
+      poly mat_elem, z_elem;
+      unpack_pk_rho(rho, pk);
+      poly_uniform(&mat_elem, rho, (i << 8) | j);
+      unpack_sig_z(&z_elem, j, sig);
+      if (i == 0) {
+        /* Need to check the infinity norm of z only once */
+        if (poly_chknorm(&z_elem, GAMMA1 - BETA)) {
+          return -1;
+        }
+      }
+      poly_ntt_leaktime(&z_elem);
+      poly_pointwise_acc_montgomery_leaktime(&w1_elem, &mat_elem, &z_elem);
+    }
 
-  /* Call random oracle and verify challenge */
-  shake256_inc_init(&state);
-  shake256_inc_absorb(&state, mu, CRHBYTES);
-  shake256_inc_absorb(&state, buf, K*POLYW1_PACKEDBYTES);
+    {
+      poly t1_elem;
+      unpack_pk_t1(&t1_elem, i, pk);
+      poly_shiftl(&t1_elem);
+      poly_ntt_leaktime(&t1_elem);
+      poly_pointwise_montgomery_leaktime(&t1_elem, &cp, &t1_elem);
+      poly_sub(&w1_elem, &w1_elem, &t1_elem);
+      poly_reduce(&w1_elem);
+      poly_invntt_tomont_leaktime(&w1_elem);
+    }
+
+    {
+      /* Reconstruct w1 */
+      poly h_elem;
+      uint8_t buf[POLYW1_PACKEDBYTES];
+      if (0 != unpack_sig_h_update(&unpack_sig_h, &h_elem)) {
+        return -1;
+      }
+      poly_caddq(&w1_elem);
+      poly_use_hint(&w1_elem, &w1_elem, &h_elem);
+      polyw1_pack(buf, &w1_elem);
+      shake256_inc_absorb(&state, buf, POLYW1_PACKEDBYTES);
+    }
+  }
+
+  /* We have read all hints.  Check if the reader properly finished. */
+  if (unpack_sig_h.error || !unpack_sig_h.finished) {
+    return 1;
+  }
+
   shake256_inc_finalize(&state);
+  uint8_t c2[SEEDBYTES];
   shake256_inc_squeeze(c2, SEEDBYTES, &state);
-  for(i = 0; i < SEEDBYTES; ++i)
-    if(c[i] != c2[i])
+  for(unsigned int i = 0; i < SEEDBYTES; i++) {
+    if(c[i] != c2[i]) {
       return -1;
+    }
+  }
 
   return 0;
 }
